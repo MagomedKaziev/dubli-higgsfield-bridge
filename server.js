@@ -217,6 +217,49 @@ server.registerTool(
   }
 );
 
+// Reference images live in the artifact's own asset store, which Higgsfield
+// cannot reach (private) and which the page cannot upload anywhere itself
+// (its CSP blocks the presigned S3 host). So the page reads its own asset,
+// sends the bytes here as base64, and this tool performs the PUT that
+// Higgsfield's media_upload handed out. The page then calls media_confirm
+// and passes the resulting media_id to generate_image as a reference.
+server.registerTool(
+  "upload_reference",
+  {
+    title: "Upload reference bytes to a presigned URL",
+    description:
+      "Uploads base64-encoded image bytes to a presigned PUT URL (e.g. the upload_url returned by Higgsfield's media_upload) and reports the HTTP status. Lets a claude.ai artifact, whose CSP blocks direct uploads, attach its own stored images as generation references.",
+    inputSchema: {
+      base64: z.string().min(16).describe("Base64-encoded image bytes (no data: prefix)."),
+      upload_url: z.string().url().describe("Presigned https PUT URL to upload the bytes to."),
+      mime_type: z.string().optional().describe('Content type to send, e.g. "image/jpeg". Defaults to image/jpeg.'),
+    },
+  },
+  async ({ base64, upload_url, mime_type }) => {
+    try {
+      const parsed = new URL(upload_url);
+      if (parsed.protocol !== "https:") throw new Error("Only https upload URLs are allowed.");
+      const body = Buffer.from(base64, "base64");
+      if (!body.length) throw new Error("Decoded payload is empty.");
+      if (body.length > 20_000_000) throw new Error("Payload is too large.");
+      const contentType = mime_type || "image/jpeg";
+      const res = await fetch(upload_url, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Upload failed (${res.status}): ${text.slice(0, 300)}`);
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, status: res.status, bytes: body.length }) }] };
+    } catch (err) {
+      console.error("[upload_reference failed]", err);
+      return { content: [{ type: "text", text: String(err && err.message ? err.message : err) }], isError: true };
+    }
+  }
+);
+
 // ---------- HTTP transport ----------
 
 const app = express();
