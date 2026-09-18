@@ -186,6 +186,37 @@ server.registerTool(
   }
 );
 
+// The prototype generates its grids through the viewer's own Higgsfield
+// connector (their normal account credits), which hands back a CDN URL.
+// A claude.ai artifact cannot load that URL — its CSP blocks every host
+// but a couple of script CDNs — so this tool downloads it here and returns
+// the bytes as an MCP image block. No Higgsfield API key involved.
+server.registerTool(
+  "fetch_image",
+  {
+    title: "Fetch an image and return its bytes",
+    description:
+      "Downloads an image from a public https URL server-side and returns the raw bytes as an MCP image block, so a claude.ai artifact (whose CSP blocks external hosts) can read it.",
+    inputSchema: {
+      url: z.string().url().describe("Direct https URL of the image to download."),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:") throw new Error("Only https URLs are allowed.");
+      const { data, mimeType } = await downloadAsBase64(url);
+      if (!mimeType.startsWith("image/")) throw new Error(`Not an image: ${mimeType}`);
+      if (data.length > 20_000_000) throw new Error("Image is too large to return inline.");
+      return { content: [{ type: "image", data, mimeType }] };
+    } catch (err) {
+      console.error("[fetch_image failed]", err);
+      return { content: [{ type: "text", text: String(err && err.message ? err.message : err) }], isError: true };
+    }
+  }
+);
+
 // ---------- HTTP transport ----------
 
 const app = express();
